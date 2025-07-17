@@ -3,12 +3,12 @@ from setuptools import setup, find_packages
 
 setup(
         name="MOFClassifier",
-        version="0.0.3",
+        version="0.1.0",
         packages=find_packages(),
-        description="classifying “computation-ready” experimental metal-organic framework using PU-CGCNN",
+        description="A Machine Learning Approach for Validating Computation-Ready Metal-Organic Frameworks",
         author="Guobin Zhao",
         author_email="sxmzhaogb@gmai.com",
-        url="https://github.com/mtap-research/MOFClassifier/",
+        url="https://github.com/Chung-Research-Group/MOFClassifier",
         long_description=open('README.md').read(),
         long_description_content_type='text/markdown',
         license="CC-BY-4.0",
