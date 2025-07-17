@@ -28,7 +28,7 @@ if os.path.isdir(models_dir) and os.listdir(models_dir):
     pass
 else:
     os.makedirs(models_dir, exist_ok=True)
-    zip_url = "https://github.com/sxm13/MOFClassifier/archive/refs/heads/main.zip"
+    zip_url = "https://github.com/mtap-research/MOFClassifier/archive/refs/heads/main.zip"
     resp = requests.get(zip_url)
     resp.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
@@ -43,7 +43,28 @@ else:
                 dst.write(src.read())
             print(f"Extracted {rel_path} to models/")
 
-atom_url = "https://raw.githubusercontent.com/sxm13/MOFClassifier/main/MOFClassifier/atom_init.json"
+models_dir_qsp = os.path.join(package_directory, "models_qsp")
+
+if os.path.isdir(models_dir_qsp) and os.listdir(models_dir_qsp):
+    pass
+else:
+    os.makedirs(models_dir_qsp, exist_ok=True)
+    zip_url = "https://github.com/mtap-research/MOFClassifier/archive/refs/heads/main.zip"
+    resp = requests.get(zip_url)
+    resp.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+        prefix = "MOFClassifier-main/MOFClassifier/models_qsp/"
+        for member in z.namelist():
+            if not member.startswith(prefix) or member.endswith("/"):
+                continue
+            rel_path = member[len(prefix):]
+            dest_path = os.path.join(models_dir_qsp, rel_path)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            with z.open(member) as src, open(dest_path, "wb") as dst:
+                dst.write(src.read())
+            print(f"Extracted {rel_path} to models/")
+
+atom_url = "https://raw.githubusercontent.com/mtap-research/MOFClassifier/main/MOFClassifier/atom_init.json"
 atom_path = os.path.join(package_directory, "atom_init.json")
 
 if not os.path.exists(atom_path):
@@ -249,9 +270,17 @@ class Normalizer(object):
         self.mean = state_dict['mean']
         self.std = state_dict['std']
 
-def predict(root_cif, atom_init_file=os.path.join(package_directory, "atom_init.json"), model_dir = os.path.join(package_directory, "models")):
+def predict(root_cif,
+            atom_init_file=os.path.join(package_directory, "atom_init.json"),
+            model = "core"):
     use_cuda = torch.cuda.is_available()
     models_100 = []
+    if model == "core":
+        model_dir = os.path.join(package_directory, "models")
+    elif model == "qsp":
+        model_dir = os.path.join(package_directory, "models_qsp")
+    else:
+        print("Currently only core or qsp are supported.")
     for i in tqdm(range(1, 101)):
         collate_fn = collate_pool
         dataset_test = []
@@ -307,4 +336,98 @@ def predict(root_cif, atom_init_file=os.path.join(package_directory, "atom_init.
             test_cif_ids += batch_cif_ids
         models_100.extend(test_preds)
     CLscore = np.mean(models_100)
-    return test_cif_ids[0], models_100, CLscore
+    return [test_cif_ids[0], models_100, CLscore]
+
+
+def predict_batch(
+                    root_cifs,
+                    atom_init_file=os.path.join(package_directory, "atom_init.json"),
+                    model = "core",
+                    batch_size=512,
+                ):
+    use_cuda = torch.cuda.is_available()
+    models_100 = []
+
+    if model == "core":
+        model_dir = os.path.join(package_directory, "models")
+    elif model == "qsp":
+        model_dir = os.path.join(package_directory, "models_qsp")
+    else:
+        print("Currently only core or qsp are supported.")
+    
+    collate_fn = collate_pool
+    dataset_test = []
+    dataset_test.extend(
+        [
+            preprocess(root_cif=root_cif, atom_init_file=atom_init_file)
+            for root_cif in root_cifs
+        ]
+    )
+    test_loader = DataLoader(
+        dataset_test,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=1,
+        collate_fn=collate_fn,
+        pin_memory=use_cuda,
+    )
+    test_cif_ids = []
+
+    for i in tqdm(range(1, 101)):
+        modelpath = os.path.join(model_dir, "checkpoint_bag_" + str(i) + ".pth.tar")
+        if os.path.isfile(modelpath):
+            model_checkpoint = torch.load(modelpath, weights_only=False,
+                                          map_location=lambda storage, loc: storage)
+            model_args = argparse.Namespace(**model_checkpoint['args'])
+        else:
+            print("=> no model params found at '{}'".format(modelpath))
+        structures, _ = dataset_test[0]
+        orig_atom_fea_len = structures[0].shape[-1]
+        nbr_fea_len = structures[1].shape[-1]
+        model = CrystalGraphConvNet(orig_atom_fea_len, nbr_fea_len,
+                                    atom_fea_len=model_args.atom_fea_len,
+                                    n_conv=model_args.n_conv,
+                                    h_fea_len=model_args.h_fea_len,
+                                    n_h=model_args.n_h,
+                                    classification=True)
+        if use_cuda:
+            model.cuda()
+        normalizer = Normalizer(torch.zeros(3))
+        if os.path.isfile(modelpath):
+            checkpoint = torch.load(modelpath, weights_only=False,
+                                    map_location=lambda storage, loc: storage)
+            model.load_state_dict(checkpoint['state_dict'])
+            normalizer.load_state_dict(checkpoint['normalizer'])
+        else:
+            print("=> no model found at '{}'".format(modelpath))
+        test_preds = []
+        model.eval()
+        for _, (input, batch_cif_ids) in enumerate(test_loader):
+            with torch.no_grad():
+                if use_cuda:
+                    input_var = (
+                        Variable(input[0].cuda()),
+                        Variable(input[1].cuda()),
+                        input[2].cuda(),
+                        [crys_idx.cuda() for crys_idx in input[3]],
+                    )
+                else:
+                    input_var = (
+                        Variable(input[0]),
+                        Variable(input[1]),
+                        input[2],
+                        input[3],
+                    )
+            output = model(*input_var)
+            test_pred = torch.exp(output.data.cpu())
+            assert test_pred.shape[1] == 2
+            test_preds += test_pred[:, 1]
+            if i == 1:
+                test_cif_ids += batch_cif_ids
+        models_100.append(test_preds)
+    models_100 = np.asarray(models_100).T
+    CLscore = np.mean(models_100, axis=1).tolist()
+    return [
+        (test_cif_ids[i], models_100[i].tolist(), CLscore[i])
+        for i in range(len(root_cifs))
+    ]
