@@ -36,3 +36,7 @@ results = CLscore.predict_batch(root_cifs=["./example1.cif""./example2.cif","./e
                                                                                 
 ### Citation                                          
 **Guobin Zhao**, **Pengyu Zhao** and **Yongchul G. Chung**. 2025. **arXiv.2506.14845**.
+
+
+### Acknowledgments
+We thank [henk789](https://github.com/henk789) for contribution to batch prediction.
